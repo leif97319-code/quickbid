@@ -1,0 +1,5 @@
+{
+  "name": "QuickBid RFQ Platform",
+  "description": "A professional RFQ management system where buyers can initiate inquiries and vendors can submit isolated competitive bids with AI-powered analysis and data export.",
+  "requestFramePermissions": []
+}
