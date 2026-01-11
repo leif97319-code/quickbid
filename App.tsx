@@ -37,6 +37,12 @@ const Map = {
   }
 };
 
+const INITIAL_USERS: User[] = [
+  { id: 'admin', name: '系统管理员', role: UserRole.SYS_ADMIN, company: 'QuickBid', password: 'admin', createdAt: new Date().toISOString() },
+  { id: 'buyer', name: '王采购', role: UserRole.ADMIN, company: '演示采购中心', password: '123', createdAt: new Date().toISOString() },
+  { id: 'vendor1', name: '李供货', role: UserRole.VENDOR, company: '演示供应商', password: '123', createdAt: new Date().toISOString() }
+];
+
 const getCloudConfig = () => ({
   url: localStorage.getItem('qb_cloud_url') || '',
   key: localStorage.getItem('qb_cloud_key') || ''
@@ -57,24 +63,39 @@ const DataService = {
   async getRFQs() {
     if (!supabase) return JSON.parse(localStorage.getItem('qb_r') || '[]');
     const { data, error } = await supabase.from('rfqs').select('*').order('created_at', { ascending: false });
-    if (error) { console.error("Fetch RFQs Error:", error); return []; }
+    if (error) return [];
     return (data || []).map(Map.rfq.toModel);
   },
 
   async getBids() {
     if (!supabase) return JSON.parse(localStorage.getItem('qb_b') || '[]');
     const { data, error } = await supabase.from('bids').select('*');
-    if (error) { console.error("Fetch Bids Error:", error); return []; }
-    const mapped = (data || []).map(Map.bid.toModel);
-    console.log("Synced Bids from Cloud:", mapped); // 调试日志
-    return mapped;
+    if (error) return [];
+    return (data || []).map(Map.bid.toModel);
   },
 
   async getUsers() {
-    if (!supabase) return JSON.parse(localStorage.getItem('qb_u') || JSON.stringify(INITIAL_USERS));
-    const { data, error } = await supabase.from('users').select('*');
-    if (error) return JSON.parse(localStorage.getItem('qb_u') || JSON.stringify(INITIAL_USERS));
-    return (data || []).map(Map.user.toModel);
+    const localUsers = JSON.parse(localStorage.getItem('qb_u') || JSON.stringify(INITIAL_USERS));
+    if (!supabase) return localUsers;
+    
+    try {
+      const { data, error } = await supabase.from('users').select('*');
+      if (error) throw error;
+      const cloudUsers = (data || []).map(Map.user.toModel);
+      
+      // 策略：如果云端没有 admin 账号，自动把本地初始账号合并进去，确保永远能登录
+      if (cloudUsers.length === 0) return INITIAL_USERS;
+      
+      // 合并逻辑：以云端为准，但保留 INITIAL_USERS 中云端缺失的账号
+      const combined = [...cloudUsers];
+      INITIAL_USERS.forEach(u => {
+        if (!combined.find(c => c.id === u.id)) combined.push(u);
+      });
+      return combined;
+    } catch (e) {
+      console.warn("Using local users fallback", e);
+      return localUsers;
+    }
   },
 
   async saveRFQ(rfq: RFQ) {
@@ -87,7 +108,6 @@ const DataService = {
   },
 
   async saveBid(bid: Bid) {
-    console.log("Attempting to save bid:", bid);
     if (!supabase) {
       const local = JSON.parse(localStorage.getItem('qb_b') || '[]');
       const idx = local.findIndex((b: any) => b.rfqId === bid.rfqId && b.vendorId === bid.vendorId);
@@ -95,8 +115,7 @@ const DataService = {
       localStorage.setItem('qb_b', JSON.stringify(local));
       return;
     }
-    const { error } = await supabase.from('bids').upsert(Map.bid.toDB(bid));
-    if (error) throw error;
+    await supabase.from('bids').upsert(Map.bid.toDB(bid));
   },
 
   async saveUser(user: User) {
@@ -123,36 +142,11 @@ const Badge = ({ status }: { status: string }) => {
   return <span className={`px-2 py-0.5 rounded-full text-[10px] font-black uppercase tracking-wider ${styles[status] || 'bg-gray-100 text-gray-800'}`}>{status}</span>;
 };
 
-const UsersList: React.FC<{ users: User[] }> = ({ users }) => (
-  <div className="space-y-6">
-    <h2 className="text-3xl font-black text-gray-900 tracking-tight">用户管理</h2>
-    <div className="bg-white rounded-[40px] shadow-sm border border-gray-50 overflow-hidden">
-      <table className="w-full text-left">
-        <thead><tr className="bg-gray-50/50">
-          <th className="p-6 text-[10px] font-black uppercase text-gray-400">ID</th>
-          <th className="p-6 text-[10px] font-black uppercase text-gray-400">名称/公司</th>
-          <th className="p-6 text-[10px] font-black uppercase text-gray-400">身份</th>
-        </tr></thead>
-        <tbody className="divide-y divide-gray-50">
-          {users.map(u => (
-            <tr key={u.id}>
-              <td className="p-6 font-black text-indigo-600">{u.id}</td>
-              <td className="p-6 font-bold text-gray-900">{u.name}<br/><span className="text-[10px] text-gray-400 uppercase">{u.company}</span></td>
-              <td className="p-6"><Badge status={u.role} /></td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  </div>
-);
-
 const RFQDetail: React.FC<{ rfq: RFQ, bids: Bid[], user: User, onAddBid: (bid: Bid) => void }> = ({ rfq, bids, user, onAddBid }) => {
   const [amount, setAmount] = useState('');
   const [isSyncing, setIsSyncing] = useState(false);
   
   const rfqBids = useMemo(() => bids.filter(b => b.rfqId === rfq.id), [bids, rfq.id]);
-  
   const visibleBids = useMemo(() => {
     if (user.role === UserRole.ADMIN || user.role === UserRole.SYS_ADMIN) return rfqBids;
     return rfqBids.filter(b => b.vendorId === user.id);
@@ -171,11 +165,10 @@ const RFQDetail: React.FC<{ rfq: RFQ, bids: Bid[], user: User, onAddBid: (bid: B
       };
       await DataService.saveBid(bid);
       onAddBid(bid);
-      alert('报价已成功上传云端');
+      alert('已同步至云端');
       setAmount('');
     } catch (e) {
-      console.error(e);
-      alert('同步失败，请检查网络和云端权限');
+      alert('同步失败，请检查网络');
     } finally { setIsSyncing(false); }
   };
 
@@ -188,10 +181,10 @@ const RFQDetail: React.FC<{ rfq: RFQ, bids: Bid[], user: User, onAddBid: (bid: B
       </div>
       <div className="bg-white p-10 rounded-[48px] shadow-sm border border-gray-50">
         <div className="flex justify-between items-center mb-10">
-          <h3 className="font-black text-xl text-gray-800">{user.role === UserRole.VENDOR ? '我的出价' : '实时竞价看板'}</h3>
+          <h3 className="font-black text-xl text-gray-800">{user.role === UserRole.VENDOR ? '我的出价' : '实时报价分析'}</h3>
           <div className="flex items-center gap-2 px-4 py-2 bg-green-50 rounded-2xl">
              <span className="w-2 h-2 bg-green-500 rounded-full animate-pulse"></span>
-             <span className="text-[10px] font-black text-green-600 uppercase">云端实时连接中</span>
+             <span className="text-[10px] font-black text-green-600 uppercase">实时数据对齐</span>
           </div>
         </div>
         {visibleBids.length > 0 ? (
@@ -208,16 +201,16 @@ const RFQDetail: React.FC<{ rfq: RFQ, bids: Bid[], user: User, onAddBid: (bid: B
               </BarChart>
             </ResponsiveContainer>
           </div>
-        ) : <div className="text-center py-16 text-gray-300 font-bold italic">等待供应商报价数据...</div>}
+        ) : <div className="text-center py-16 text-gray-300 font-bold italic">等待报价数据同步...</div>}
       </div>
       {user.role === UserRole.VENDOR && (
         <div className="bg-white p-8 rounded-[40px] shadow-2xl border border-gray-100 flex flex-col sm:flex-row gap-4">
           <div className="flex-1 relative">
             <span className="absolute left-5 top-1/2 -translate-y-1/2 font-black text-gray-400">¥</span>
-            <input type="number" placeholder="输入您的含税总价" className="w-full pl-10 pr-5 py-5 bg-gray-50 rounded-2xl font-black text-lg outline-none focus:ring-2 focus:ring-indigo-500" value={amount} onChange={e=>setAmount(e.target.value)} />
+            <input type="number" placeholder="输入含税总价" className="w-full pl-10 pr-5 py-5 bg-gray-50 rounded-2xl font-black text-lg outline-none" value={amount} onChange={e=>setAmount(e.target.value)} />
           </div>
           <button onClick={submitBid} disabled={isSyncing} className="bg-indigo-600 text-white px-10 py-5 rounded-2xl font-black shadow-xl hover:bg-indigo-700 transition-all active:scale-95 disabled:opacity-50">
-            {isSyncing ? '正在同步...' : (myBid ? '更新报价' : '确认提交')}
+            {isSyncing ? '同步中' : '确认报价'}
           </button>
         </div>
       )}
@@ -242,27 +235,19 @@ const App: React.FC = () => {
   }, [user]);
 
   const loadAll = async () => {
-    console.log("Syncing with cloud...");
     setLoading(true);
     try {
       const [r, b, u] = await Promise.all([DataService.getRFQs(), DataService.getBids(), DataService.getUsers()]);
       setRfqs(r); setBids(b); setUsers(u);
     } catch (e) {
-      console.error("Sync Failed:", e);
+      console.error(e);
     } finally { setLoading(false); }
   };
 
   useEffect(() => {
     loadAll();
     if (supabase) {
-      // 监听所有表的任何变动，一旦变动立即触发全量更新
-      const sub = supabase.channel('realtime-sync')
-        .on('postgres_changes', { event: '*', schema: 'public', table: 'rfqs' }, loadAll)
-        .on('postgres_changes', { event: '*', schema: 'public', table: 'bids' }, loadAll)
-        .on('postgres_changes', { event: '*', schema: 'public', table: 'users' }, loadAll)
-        .subscribe((status: string) => {
-          console.log("Realtime Subscription Status:", status);
-        });
+      const sub = supabase.channel('global-sync').on('postgres_changes', { event: '*', schema: 'public' }, loadAll).subscribe();
       return () => { supabase.removeChannel(sub); };
     }
   }, []);
@@ -278,16 +263,16 @@ const App: React.FC = () => {
         <nav className="h-20 bg-white/70 backdrop-blur-xl sticky top-0 z-50 border-b border-gray-100 px-8 flex items-center justify-between">
           <Link to="/" className="flex items-center gap-3 font-black text-2xl text-indigo-600">
             <div className="bg-indigo-600 text-white p-2 rounded-xl shadow-lg shadow-indigo-100"><Icons.Shield /></div>
-            <span className="hidden sm:inline tracking-tighter">QuickBid</span>
+            <span className="hidden sm:inline">QuickBid</span>
           </Link>
           <div className="flex items-center gap-2">
-            <button onClick={loadAll} className={`p-3 rounded-2xl text-gray-400 hover:bg-gray-100 transition-all ${loading ? 'animate-spin text-indigo-600' : ''}`} title="手动同步">
+            <button onClick={loadAll} className={`p-3 rounded-2xl text-gray-400 hover:bg-gray-100 transition-all ${loading ? 'animate-spin text-indigo-600' : ''}`} title="强制刷新">
               <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" /></svg>
             </button>
-            {isAdmin && <Link to="/users" className="p-3 bg-gray-50 text-gray-400 rounded-2xl hover:text-indigo-600 hover:bg-white transition-all shadow-sm"><Icons.User /></Link>}
+            {isAdmin && <Link to="/users" className="p-3 bg-gray-50 text-gray-400 rounded-2xl hover:text-indigo-600 transition-all shadow-sm"><Icons.User /></Link>}
             <button onClick={() => setShowCloudSet(true)} className={`p-3 rounded-2xl transition-all ${DataService.isCloud() ? 'bg-green-50 text-green-600' : 'bg-amber-50 text-amber-600 animate-pulse'}`}><Icons.Settings /></button>
             <div className="h-8 w-[1px] bg-gray-100 mx-2"></div>
-            <button onClick={() => { if(confirm('退出登录？')) setUser(null); }} className="text-[10px] font-black text-red-500 uppercase bg-red-50 px-4 py-2 rounded-xl hover:bg-red-500 hover:text-white transition-all">退出</button>
+            <button onClick={() => { if(confirm('确认退出登录？')) setUser(null); }} className="text-[10px] font-black text-red-500 uppercase bg-red-50 px-4 py-2 rounded-xl hover:bg-red-500 hover:text-white transition-all">退出</button>
           </div>
         </nav>
 
@@ -297,16 +282,16 @@ const App: React.FC = () => {
               <div className="space-y-10 animate-in fade-in slide-in-from-bottom-4 duration-700">
                 <div className="flex justify-between items-end">
                   <div>
-                    <h2 className="text-3xl font-black text-gray-900 tracking-tight">项目中心</h2>
+                    <h2 className="text-3xl font-black text-gray-900 tracking-tight">项目列表</h2>
                     <p className="text-gray-400 text-xs mt-1 font-bold">
-                      {DataService.isCloud() ? '🌐 实时互联：所有用户可见' : '🔕 本地隔离：仅自己可见'}
+                      {DataService.isCloud() ? '🌐 云端同步已开启' : '🔕 仅限本地浏览器'}
                     </p>
                   </div>
                   {isAdmin && (
                     <button onClick={async () => {
                       const title = window.prompt('询价项目名称:');
                       if(!title) return;
-                      const r: RFQ = { id: 'R-'+Date.now(), title, description: '请输入询价的具体需求...', deadline: '2025-12-31', status: RFQStatus.OPEN, createdAt: new Date().toISOString(), creatorId: user.id, items: [] };
+                      const r: RFQ = { id: 'R-'+Date.now(), title, description: '需求详见项目详情', deadline: '2025-12-31', status: RFQStatus.OPEN, createdAt: new Date().toISOString(), creatorId: user.id, items: [] };
                       await DataService.saveRFQ(r);
                       setRfqs(p => [r, ...p]);
                     }} className="bg-indigo-600 text-white p-5 rounded-[28px] shadow-2xl shadow-indigo-200 hover:scale-110 active:scale-95 transition-all"><Icons.Plus /></button>
@@ -317,14 +302,9 @@ const App: React.FC = () => {
                     <Link key={r.id} to={`/rfq/${r.id}`} className="group bg-white p-10 rounded-[48px] border border-gray-50 shadow-sm hover:shadow-2xl hover:border-indigo-100 transition-all">
                       <Badge status={r.status} />
                       <h3 className="text-2xl font-black text-gray-800 mt-4 mb-2 group-hover:text-indigo-600 transition-colors">{r.title}</h3>
-                      <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">截止日期: {r.deadline}</p>
+                      <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">截止: {r.deadline}</p>
                     </Link>
                   ))}
-                  {rfqs.length === 0 && (
-                    <div className="col-span-full py-24 text-center border-2 border-dashed border-gray-100 rounded-[48px]">
-                       <p className="text-gray-300 font-bold italic">暂无询价项目</p>
-                    </div>
-                  )}
                 </div>
               </div>
             } />
@@ -338,10 +318,34 @@ const App: React.FC = () => {
   );
 };
 
+const UsersList = ({ users }: { users: User[] }) => (
+  <div className="space-y-6 animate-in fade-in duration-500">
+    <h2 className="text-3xl font-black text-gray-900 tracking-tight">用户名单</h2>
+    <div className="bg-white rounded-[40px] shadow-sm border border-gray-50 overflow-hidden">
+      <table className="w-full text-left">
+        <thead><tr className="bg-gray-50/50">
+          <th className="p-6 text-[10px] font-black uppercase text-gray-400">账号 ID</th>
+          <th className="p-6 text-[10px] font-black uppercase text-gray-400">名称/公司</th>
+          <th className="p-6 text-[10px] font-black uppercase text-gray-400">身份角色</th>
+        </tr></thead>
+        <tbody className="divide-y divide-gray-50">
+          {users.map(u => (
+            <tr key={u.id}>
+              <td className="p-6 font-black text-indigo-600">{u.id}</td>
+              <td className="p-6 font-bold text-gray-900">{u.name}<br/><span className="text-[10px] text-gray-400 uppercase font-black">{u.company}</span></td>
+              <td className="p-6"><Badge status={u.role} /></td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  </div>
+);
+
 const RFQDetailWrapper = ({ rfqs, bids, user, setBids }: any) => {
   const { id } = useParams();
   const rfq = rfqs.find((r:any) => r.id === id);
-  if (!rfq) return <div className="text-center py-40 text-gray-300 font-black italic animate-pulse">正在同步云端项目数据...</div>;
+  if (!rfq) return <div className="text-center py-40 text-gray-300 font-black italic">数据同步中...</div>;
   return <RFQDetail rfq={rfq} bids={bids} user={user} onAddBid={b => setBids((p:any) => {
     const idx = p.findIndex((x:any)=>x.rfqId===b.rfqId && x.vendorId===b.vendorId);
     if(idx>=0){ const n = [...p]; n[idx]=b; return n; }
@@ -358,21 +362,14 @@ const CloudSettings: React.FC<{ onClose: () => void }> = ({ onClose }) => {
   };
   return (
     <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-[100] flex items-center justify-center p-6">
-      <div className="bg-white w-full max-w-md rounded-[40px] p-10 shadow-2xl animate-in zoom-in-95 duration-300">
-        <h3 className="text-xl font-black mb-2">连接到云端数据库</h3>
-        <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-6">填入凭证以启用全员同步竞价</p>
+      <div className="bg-white w-full max-w-md rounded-[40px] p-10 shadow-2xl">
+        <h3 className="text-xl font-black mb-6">数据库设置</h3>
         <div className="space-y-4">
-          <div>
-            <label className="text-[10px] font-black text-gray-400 mb-1 block">SUPABASE URL</label>
-            <input type="text" placeholder="https://..." className="w-full p-4 bg-gray-50 rounded-2xl font-bold border-none focus:ring-2 focus:ring-indigo-500 outline-none" value={cfg.url} onChange={e=>setCfg({...cfg, url: e.target.value})} />
-          </div>
-          <div>
-            <label className="text-[10px] font-black text-gray-400 mb-1 block">ANON KEY</label>
-            <input type="password" placeholder="eyJ..." className="w-full p-4 bg-gray-50 rounded-2xl font-bold border-none focus:ring-2 focus:ring-indigo-500 outline-none" value={cfg.key} onChange={e=>setCfg({...cfg, key: e.target.value})} />
-          </div>
+          <input type="text" placeholder="Supabase URL" className="w-full p-4 bg-gray-50 rounded-2xl font-bold border-none" value={cfg.url} onChange={e=>setCfg({...cfg, url: e.target.value})} />
+          <input type="password" placeholder="Supabase Anon Key" className="w-full p-4 bg-gray-50 rounded-2xl font-bold border-none" value={cfg.key} onChange={e=>setCfg({...cfg, key: e.target.value})} />
           <div className="flex gap-3 pt-4">
-            <button onClick={onClose} className="flex-1 p-4 bg-gray-100 rounded-2xl font-black text-xs uppercase hover:bg-gray-200 transition-colors">取消</button>
-            <button onClick={save} className="flex-1 p-4 bg-indigo-600 text-white rounded-2xl font-black text-xs uppercase shadow-lg shadow-indigo-100 hover:bg-indigo-700 transition-all">保存并重启</button>
+            <button onClick={onClose} className="flex-1 p-4 bg-gray-100 rounded-2xl font-black text-xs uppercase">取消</button>
+            <button onClick={save} className="flex-1 p-4 bg-indigo-600 text-white rounded-2xl font-black text-xs uppercase shadow-lg">连接云端</button>
           </div>
         </div>
       </div>
@@ -391,11 +388,16 @@ const AuthPage: React.FC<{ onAuth: (user: User) => void }> = ({ onAuth }) => {
     try {
       const all = await DataService.getUsers();
       if (isLogin) {
-        const u = all.find((x:any) => x.id === formData.id && x.password === formData.password);
-        if (u) onAuth(u); else alert('账号或密码不匹配');
+        // 查找匹配用户
+        const u = all.find((x:any) => x.id.toLowerCase() === formData.id.toLowerCase() && x.password === formData.password);
+        if (u) {
+          onAuth(u);
+        } else {
+          alert(`账号或密码错误。 \n提示: 如果已连云端且云端为空，默认账号是 admin / admin`);
+        }
       } else {
-        if (!formData.id || !formData.password || !formData.name) return alert('请填全注册信息');
-        if (all.find((x:any) => x.id === formData.id)) return alert('该 ID 已被注册');
+        if (!formData.id || !formData.password || !formData.name) return alert('请完整填写注册信息');
+        if (all.find((x:any) => x.id === formData.id)) return alert('该 ID 已被注册，请更换');
         const newUser = { ...formData, createdAt: new Date().toISOString() };
         await DataService.saveUser(newUser);
         onAuth(newUser);
@@ -409,36 +411,30 @@ const AuthPage: React.FC<{ onAuth: (user: User) => void }> = ({ onAuth }) => {
         <div className="text-center mb-10">
            <div className="inline-block p-5 bg-indigo-600 text-white rounded-[24px] mb-4 shadow-2xl shadow-indigo-100"><Icons.Shield /></div>
            <h1 className="text-3xl font-black text-gray-900 tracking-tighter">QuickBid</h1>
-           <p className="text-gray-400 text-[10px] font-black uppercase tracking-[0.2em] mt-2">云端协同竞价平台</p>
+           <p className="text-gray-400 text-[10px] font-black uppercase tracking-[0.2em] mt-2">智能竞价管理系统</p>
         </div>
         <form onSubmit={handleSubmit} className="space-y-4">
-          <input type="text" placeholder="账号 ID" required className="w-full p-5 bg-gray-50 rounded-3xl font-bold outline-none focus:ring-2 focus:ring-indigo-500 transition-all" value={formData.id} onChange={e=>setFormData({...formData, id: e.target.value})} />
+          <input type="text" placeholder="账号 ID (如 admin)" required className="w-full p-5 bg-gray-50 rounded-3xl font-bold outline-none border-2 border-transparent focus:border-indigo-500" value={formData.id} onChange={e=>setFormData({...formData, id: e.target.value})} />
           {!isLogin && (
             <>
-              <input type="text" placeholder="真实姓名 / 公司名" required className="w-full p-5 bg-gray-50 rounded-3xl font-bold outline-none focus:ring-2 focus:ring-indigo-500 transition-all" value={formData.name} onChange={e=>setFormData({...formData, name: e.target.value})} />
+              <input type="text" placeholder="名称/公司" required className="w-full p-5 bg-gray-50 rounded-3xl font-bold outline-none border-2 border-transparent focus:border-indigo-500" value={formData.name} onChange={e=>setFormData({...formData, name: e.target.value})} />
               <select className="w-full p-5 bg-gray-50 rounded-3xl font-black text-indigo-600 outline-none" value={formData.role} onChange={e=>setFormData({...formData, role: e.target.value as UserRole})}>
                 <option value={UserRole.VENDOR}>乙方 (供应商)</option>
                 <option value={UserRole.ADMIN}>甲方 (采购员)</option>
               </select>
             </>
           )}
-          <input type="password" placeholder="访问密码" required className="w-full p-5 bg-gray-50 rounded-3xl font-bold outline-none focus:ring-2 focus:ring-indigo-500 transition-all" value={formData.password} onChange={e=>setFormData({...formData, password: e.target.value})} />
-          <button disabled={isSubmitting} className="w-full bg-indigo-600 text-white py-6 rounded-[32px] font-black shadow-xl shadow-indigo-100 hover:bg-indigo-700 active:scale-95 transition-all mt-4 disabled:opacity-50">
-            {isSubmitting ? '同步中...' : (isLogin ? '立即登录' : '立即注册并登录')}
+          <input type="password" placeholder="密码" required className="w-full p-5 bg-gray-50 rounded-3xl font-bold outline-none border-2 border-transparent focus:border-indigo-500" value={formData.password} onChange={e=>setFormData({...formData, password: e.target.value})} />
+          <button disabled={isSubmitting} className="w-full bg-indigo-600 text-white py-6 rounded-[32px] font-black shadow-xl shadow-indigo-100 hover:bg-indigo-700 transition-all mt-4 disabled:opacity-50">
+            {isSubmitting ? '验证中...' : (isLogin ? '登录' : '注册并登录')}
           </button>
         </form>
-        <button onClick={()=>setIsLogin(!isLogin)} className="w-full mt-10 text-indigo-600 text-[10px] font-black uppercase tracking-widest text-center hover:underline transition-all">
-          {isLogin ? '没有账号？点此注册' : '已有账号？点此登录'}
+        <button onClick={()=>setIsLogin(!isLogin)} className="w-full mt-10 text-indigo-600 text-[10px] font-black uppercase tracking-widest text-center hover:underline">
+          {isLogin ? '注册新账号' : '已有账号？登录'}
         </button>
       </div>
     </div>
   );
 };
-
-const INITIAL_USERS: User[] = [
-  { id: 'admin', name: '系统管理员', role: UserRole.SYS_ADMIN, company: 'QuickBid', password: 'admin', createdAt: new Date().toISOString() },
-  { id: 'buyer', name: '王采购', role: UserRole.ADMIN, company: '演示采购中心', password: '123', createdAt: new Date().toISOString() },
-  { id: 'vendor1', name: '李供货', role: UserRole.VENDOR, company: '演示供应商', password: '123', createdAt: new Date().toISOString() }
-];
 
 export default App;
