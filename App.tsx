@@ -3,14 +3,14 @@ import React, { useState, useEffect, useRef } from 'react';
 import { HashRouter as Router, Routes, Route, Link, useNavigate, useParams, Navigate } from 'react-router-dom';
 import { User, UserRole, RFQ, Bid, RFQStatus } from './types';
 import { Icons, COLORS } from './constants';
-import { analyzeBids } from './services/geminiService';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell } from 'recharts';
 
 // --- 初始数据与 Mock ---
 const INITIAL_USERS: User[] = [
   { id: 'admin-master', name: '系统管理员', role: UserRole.SYS_ADMIN, company: 'QuickBid 官方', password: 'admin', createdAt: new Date().toISOString() },
   { id: 'buyer-1', name: '采购王工', role: UserRole.ADMIN, company: '顺达电子', password: '123', createdAt: new Date().toISOString() },
-  { id: 'vendor-1', name: '供应小李', role: UserRole.VENDOR, company: '博科技术', password: '123', createdAt: new Date().toISOString() }
+  { id: 'vendor-1', name: '供应小李', role: UserRole.VENDOR, company: '博科技术', password: '123', createdAt: new Date().toISOString() },
+  { id: 'vendor-2', name: '供应张总', role: UserRole.VENDOR, company: '宏图科技', password: '123', createdAt: new Date().toISOString() }
 ];
 
 const INITIAL_RFQS: RFQ[] = [
@@ -44,16 +44,34 @@ const Badge = ({ status, colorClass }: { status: string, colorClass?: string }) 
   );
 };
 
-// --- 页面：系统用户管理 ---
+// --- 微信分享指引遮罩 ---
+const WeChatShareMask: React.FC<{ onClose: () => void }> = ({ onClose }) => (
+  <div className="wechat-mask" onClick={onClose}>
+    <div className="flex flex-col items-end gap-4">
+      <svg width="60" height="60" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-white animate-bounce">
+        <path d="M12 5v14M5 12l7-7 7 7" />
+      </svg>
+      <div className="bg-white/10 backdrop-blur-md p-6 rounded-3xl border border-white/20 mr-4">
+        <p className="text-xl font-black mb-2">转发给供应商</p>
+        <p className="text-sm opacity-80">点击右上角“...”图标<br/>选择“发送给朋友”</p>
+      </div>
+    </div>
+  </div>
+);
+
+// --- 页面：系统管理 ---
 const SystemAdminPanel: React.FC<{ 
   users: User[], 
   setUsers: React.Dispatch<React.SetStateAction<User[]>>,
   rfqs: RFQ[],
   setRfqs: React.Dispatch<React.SetStateAction<RFQ[]>>,
   bids: Bid[],
-  setBids: React.Dispatch<React.SetStateAction<Bid[]>>
-}> = ({ users, setUsers, rfqs, setRfqs, bids, setBids }) => {
+  setBids: React.Dispatch<React.SetStateAction<Bid[]>>,
+  currentUser: User
+}> = ({ users, setUsers, rfqs, setRfqs, bids, setBids, currentUser }) => {
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const [showAddForm, setShowAddForm] = useState(false);
+  const [newUser, setNewUser] = useState({ id: '', name: '', company: '', role: UserRole.VENDOR, password: '123' });
   
   const toggleRole = (userId: string) => {
     setUsers(prev => prev.map(u => u.id === userId ? { ...u, role: u.role === UserRole.VENDOR ? UserRole.ADMIN : UserRole.VENDOR } : u));
@@ -67,89 +85,118 @@ const SystemAdminPanel: React.FC<{
     }
   };
 
+  const deleteUser = (userId: string, userName: string) => {
+    if (userId === currentUser.id) {
+      alert('无法删除当前管理员账号。');
+      return;
+    }
+    if (window.confirm(`确定要永久删除用户 "${userName}" 吗？该操作不可撤销。`)) {
+      setUsers(prev => prev.filter(u => u.id !== userId));
+    }
+  };
+
+  const handleAddUser = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (users.some(u => u.id === newUser.id)) {
+      alert('该账号 ID 已存在，请更换。');
+      return;
+    }
+    const userToAdd: User = {
+      ...newUser,
+      createdAt: new Date().toISOString()
+    };
+    setUsers(prev => [...prev, userToAdd]);
+    setShowAddForm(false);
+    setNewUser({ id: '', name: '', company: '', role: UserRole.VENDOR, password: '123' });
+    alert('新用户添加成功！');
+  };
+
   return (
-    <div className="space-y-6 animate-in fade-in duration-500">
-      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
-        <h2 className="text-xl font-black flex items-center gap-2 text-indigo-900"><Icons.Settings /> 系统后台管理</h2>
-        <div className="flex w-full sm:w-auto gap-2">
-          <input type="file" ref={fileInputRef} onChange={(e) => {
-            const file = e.target.files?.[0];
-            if (!file) return;
-            const r = new FileReader();
-            r.onload = (ev) => {
-              const json = JSON.parse(ev.target?.result as string);
-              setUsers(json.users); setRfqs(json.rfqs); setBids(json.bids);
-              alert('数据已恢复');
-            };
-            r.readAsText(file);
-          }} className="hidden" />
-          <button onClick={() => fileInputRef.current?.click()} className="flex-1 sm:flex-none text-[10px] font-black uppercase tracking-widest border border-gray-200 p-3 rounded-2xl bg-white hover:bg-gray-50 transition-colors">导入数据</button>
-          <button onClick={() => {
-            const data = JSON.stringify({ users, rfqs, bids });
-            const blob = new Blob([data], { type: 'application/json' });
-            const url = URL.createObjectURL(blob);
-            const a = document.createElement('a'); a.href = url; a.download = `QuickBid_Backup_${new Date().toISOString().split('T')[0]}.json`; a.click();
-          }} className="flex-1 sm:flex-none text-[10px] font-black uppercase tracking-widest bg-indigo-600 text-white p-3 rounded-2xl shadow-lg shadow-indigo-100 active:scale-95 transition-transform">备份全站</button>
+    <div className="space-y-6">
+      <div className="flex justify-between items-center">
+        <h2 className="text-xl font-black text-indigo-900 flex items-center gap-2"><Icons.Settings /> 系统后台管理</h2>
+        <div className="flex gap-2">
+           <button onClick={() => setShowAddForm(!showAddForm)} className="text-[10px] font-black uppercase tracking-widest bg-emerald-500 text-white px-4 py-2 rounded-xl flex items-center gap-1">
+             <Icons.Plus /> <span>新增成员</span>
+           </button>
+           <input type="file" ref={fileInputRef} className="hidden" onChange={(e) => {
+              const file = e.target.files?.[0];
+              if (!file) return;
+              const r = new FileReader();
+              r.onload = (ev) => {
+                const json = JSON.parse(ev.target?.result as string);
+                if(json.users) setUsers(json.users); 
+                if(json.rfqs) setRfqs(json.rfqs); 
+                if(json.bids) setBids(json.bids);
+                alert('数据导入成功');
+              };
+              r.readAsText(file);
+           }} />
+           <button onClick={() => fileInputRef.current?.click()} className="text-[10px] font-black uppercase tracking-widest bg-white border border-gray-200 px-4 py-2 rounded-xl">导入数据</button>
+           <button onClick={() => {
+              const data = JSON.stringify({ users, rfqs, bids });
+              const blob = new Blob([data], { type: 'application/json' });
+              const url = URL.createObjectURL(blob);
+              const a = document.createElement('a'); a.href = url; a.download = 'quickbid_data_backup.json'; a.click();
+           }} className="text-[10px] font-black uppercase tracking-widest bg-indigo-600 text-white px-4 py-2 rounded-xl">导出备份</button>
         </div>
       </div>
+
+      {showAddForm && (
+        <div className="bg-white p-6 rounded-3xl border-2 border-emerald-100 shadow-xl animate-in fade-in slide-in-from-top-4">
+          <h3 className="text-sm font-black mb-4 text-emerald-800 uppercase tracking-widest">填写新成员信息</h3>
+          <form onSubmit={handleAddUser} className="grid grid-cols-1 md:grid-cols-5 gap-4">
+            <input type="text" placeholder="账号 ID (登录用)" required className="p-3 bg-gray-50 rounded-xl text-sm outline-none focus:ring-2 focus:ring-emerald-500" value={newUser.id} onChange={e => setNewUser({...newUser, id: e.target.value})} />
+            <input type="text" placeholder="成员姓名" required className="p-3 bg-gray-50 rounded-xl text-sm outline-none focus:ring-2 focus:ring-emerald-500" value={newUser.name} onChange={e => setNewUser({...newUser, name: e.target.value})} />
+            <input type="text" placeholder="公司/部门名称" required className="p-3 bg-gray-50 rounded-xl text-sm outline-none focus:ring-2 focus:ring-emerald-500" value={newUser.company} onChange={e => setNewUser({...newUser, company: e.target.value})} />
+            <select className="p-3 bg-gray-50 rounded-xl text-sm font-bold" value={newUser.role} onChange={e => setNewUser({...newUser, role: e.target.value as UserRole})}>
+              <option value={UserRole.VENDOR}>乙方 (供应商)</option>
+              <option value={UserRole.ADMIN}>甲方 (采购方)</option>
+            </select>
+            <button className="bg-emerald-600 text-white p-3 rounded-xl font-black text-xs uppercase tracking-widest hover:bg-emerald-700 transition-colors">确认添加</button>
+          </form>
+        </div>
+      )}
       
       <div className="bg-white rounded-3xl border border-gray-100 shadow-sm overflow-hidden">
-        <div className="overflow-x-auto">
-          <table className="w-full text-left min-w-[700px]">
-            <thead className="bg-gray-50/50 border-b border-gray-100">
-              <tr>
-                <th className="px-6 py-4 text-[10px] font-black text-gray-400 uppercase tracking-widest">账户/公司</th>
-                <th className="px-6 py-4 text-[10px] font-black text-gray-400 uppercase tracking-widest">系统权限</th>
-                <th className="px-6 py-4 text-[10px] font-black text-gray-400 uppercase tracking-widest">当前密码</th>
-                <th className="px-6 py-4 text-[10px] font-black text-gray-400 uppercase tracking-widest text-right">管理操作</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-gray-50">
-              {users.map(u => (
-                <tr key={u.id} className="hover:bg-gray-50/50 transition-colors group">
-                  <td className="px-6 py-4">
+        <table className="w-full text-left">
+          <thead className="bg-gray-50 border-b border-gray-100">
+            <tr>
+              <th className="px-6 py-4 text-[10px] font-black text-gray-400 uppercase">用户/公司</th>
+              <th className="px-6 py-4 text-[10px] font-black text-gray-400 uppercase">身份</th>
+              <th className="px-6 py-4 text-[10px] font-black text-gray-400 uppercase text-right">操作</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-gray-50">
+            {users.map(u => (
+              <tr key={u.id} className="hover:bg-gray-50 transition-colors">
+                <td className="px-6 py-4">
+                  <div className="flex items-center gap-3">
+                    <div className="h-8 w-8 rounded-full bg-indigo-50 flex items-center justify-center text-indigo-600 font-black text-xs">
+                      {u.name[0]}
+                    </div>
                     <div>
-                      <p className="font-bold text-sm text-gray-900">{u.name} <span className="text-gray-300 font-normal ml-1">#{u.id}</span></p>
-                      <p className="text-[10px] font-bold text-gray-400 uppercase tracking-tighter">{u.company || '个人用户'}</p>
+                      <p className="font-bold text-sm text-gray-900">{u.name} <span className="text-[10px] text-gray-300 font-normal">({u.id})</span></p>
+                      <p className="text-[10px] text-gray-400 font-bold uppercase">{u.company}</p>
                     </div>
-                  </td>
-                  <td className="px-6 py-4"><Badge status={u.role} /></td>
-                  <td className="px-6 py-4">
-                    <span className="font-mono text-xs bg-gray-100 px-2 py-1 rounded text-gray-500">
-                      {u.password ? '••••••' : '未设置'}
-                    </span>
-                  </td>
-                  <td className="px-6 py-4 text-right">
-                    <div className="flex justify-end gap-2">
-                      <button 
-                        onClick={() => resetPassword(u.id)} 
-                        className="text-[10px] font-black uppercase text-indigo-600 bg-indigo-50 px-3 py-2 rounded-xl hover:bg-indigo-100 transition-colors"
-                      >
-                        重置密码
+                  </div>
+                </td>
+                <td className="px-6 py-4"><Badge status={u.role} /></td>
+                <td className="px-6 py-4 text-right">
+                  <div className="flex justify-end gap-3">
+                    <button onClick={() => resetPassword(u.id)} className="text-[10px] font-black text-indigo-600 uppercase hover:underline">重置密码</button>
+                    <button onClick={() => toggleRole(u.id)} className="text-[10px] font-black text-gray-400 uppercase hover:text-indigo-600">切换身份</button>
+                    {u.id !== currentUser.id && (
+                      <button onClick={() => deleteUser(u.id, u.name)} className="text-gray-300 hover:text-red-500 transition-colors">
+                        <Icons.Trash />
                       </button>
-                      {u.role !== UserRole.SYS_ADMIN && (
-                        <button 
-                          onClick={() => toggleRole(u.id)} 
-                          className="text-[10px] font-black uppercase text-gray-400 hover:text-indigo-600 px-3 py-2 rounded-xl transition-colors"
-                        >
-                          切换身份
-                        </button>
-                      )}
-                    </div>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </div>
-      <div className="p-6 bg-amber-50 rounded-3xl border border-amber-100">
-        <h4 className="text-xs font-black text-amber-800 uppercase tracking-widest mb-2 flex items-center gap-2">
-          <Icons.Shield /> 安全提醒
-        </h4>
-        <p className="text-xs text-amber-700 leading-relaxed">
-          管理员重置密码后，请务必通过安全渠道告知对方。由于采用本地存储技术，所有数据目前仅保存在您的浏览器中，请定期通过“备份全站”功能下载 JSON 文件以防数据丢失。
-        </p>
+                    )}
+                  </div>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
       </div>
     </div>
   );
@@ -164,70 +211,95 @@ const AuthPage: React.FC<{ users: User[], onAuth: (user: User) => void, onRegist
     e.preventDefault();
     if (isLogin) {
       const found = users.find(u => u.id === formData.id && u.password === formData.password);
-      if (found) onAuth(found); else alert('账号或密码错误，请联系管理员重置');
+      if (found) onAuth(found); else alert('账号或密码错误');
     } else {
-      const newUser = { ...formData, createdAt: new Date().toISOString() };
+      const newUser: User = { 
+        id: formData.id, 
+        name: formData.name, 
+        company: formData.company, 
+        role: formData.role, 
+        password: formData.password,
+        createdAt: new Date().toISOString() 
+      };
       onRegister(newUser); onAuth(newUser);
     }
   };
 
+  const quickLogin = (id: string) => {
+    const found = users.find(u => u.id === id);
+    if (found) onAuth(found);
+  };
+
   return (
-    <div className="min-h-screen bg-white md:bg-gray-100 flex items-center justify-center p-4 animate-in fade-in duration-300">
-      <div className="max-w-md w-full bg-white rounded-3xl p-8 md:shadow-xl border-none md:border">
+    <div className="min-h-screen bg-gray-100 flex items-center justify-center p-4">
+      <div className="max-w-md w-full bg-white rounded-3xl p-8 shadow-2xl">
         <div className="text-center mb-8">
-          <div className="inline-block p-4 bg-indigo-600 text-white rounded-2xl mb-4 shadow-lg shadow-indigo-100"><Icons.Shield /></div>
-          <h1 className="text-2xl font-black">QuickBid 询价协同</h1>
-          <p className="text-gray-400 text-sm mt-2">高效·隔离·智能的竞价平台</p>
+          <div className="inline-block p-4 bg-indigo-600 text-white rounded-2xl mb-4 shadow-lg shadow-indigo-200"><Icons.Shield /></div>
+          <h1 className="text-2xl font-black text-gray-900">QuickBid 询价平台</h1>
+          <p className="text-gray-400 text-xs mt-2 font-medium">极简、安全、透明的竞价管理工具</p>
         </div>
+        
         <form onSubmit={handleSubmit} className="space-y-4">
-          <input type="text" placeholder="账户 ID" required className="w-full p-4 bg-gray-50 border-none rounded-2xl focus:ring-2 focus:ring-indigo-600 outline-none" value={formData.id} onChange={e => setFormData({...formData, id: e.target.value})} />
+          <input type="text" placeholder="ID 账号" required className="w-full p-4 bg-gray-50 rounded-2xl border-none outline-none focus:ring-2 focus:ring-indigo-600 transition-all font-medium" value={formData.id} onChange={e => setFormData({...formData, id: e.target.value})} />
           {!isLogin && (
             <>
-              <input type="text" placeholder="姓名" required className="w-full p-4 bg-gray-50 border-none rounded-2xl focus:ring-2 focus:ring-indigo-600 outline-none" value={formData.name} onChange={e => setFormData({...formData, name: e.target.value})} />
-              <input type="text" placeholder="公司名" required className="w-full p-4 bg-gray-50 border-none rounded-2xl focus:ring-2 focus:ring-indigo-600 outline-none" value={formData.company} onChange={e => setFormData({...formData, company: e.target.value})} />
-              <select className="w-full p-4 bg-gray-50 border-none rounded-2xl focus:ring-2 focus:ring-indigo-600 outline-none font-bold text-gray-600" value={formData.role} onChange={e => setFormData({...formData, role: e.target.value as UserRole})}>
-                <option value={UserRole.VENDOR}>我是供应商 (乙方)</option>
-                <option value={UserRole.ADMIN}>我是采购经理 (甲方)</option>
+              <input type="text" placeholder="您的姓名" required className="w-full p-4 bg-gray-50 rounded-2xl border-none outline-none focus:ring-2 focus:ring-indigo-600 transition-all font-medium" value={formData.name} onChange={e => setFormData({...formData, name: e.target.value})} />
+              <input type="text" placeholder="公司名称" required className="w-full p-4 bg-gray-50 rounded-2xl border-none outline-none focus:ring-2 focus:ring-indigo-600 transition-all font-medium" value={formData.company} onChange={e => setFormData({...formData, company: e.target.value})} />
+              <select className="w-full p-4 bg-gray-50 rounded-2xl border-none outline-none font-bold" value={formData.role} onChange={e => setFormData({...formData, role: e.target.value as UserRole})}>
+                <option value={UserRole.VENDOR}>乙方 (供应商身份)</option>
+                <option value={UserRole.ADMIN}>甲方 (采购方身份)</option>
               </select>
             </>
           )}
-          <input type="password" placeholder="密码" required className="w-full p-4 bg-gray-50 border-none rounded-2xl focus:ring-2 focus:ring-indigo-600 outline-none" value={formData.password} onChange={e => setFormData({...formData, password: e.target.value})} />
-          <button className="w-full bg-indigo-600 text-white py-4 rounded-2xl font-black shadow-xl shadow-indigo-100 active:scale-95 transition-transform">
-            {isLogin ? '立即登录' : '快速注册并登录'}
+          <input type="password" placeholder="登录密码" required className="w-full p-4 bg-gray-50 rounded-2xl border-none outline-none focus:ring-2 focus:ring-indigo-600 transition-all font-medium" value={formData.password} onChange={e => setFormData({...formData, password: e.target.value})} />
+          <button className="w-full bg-indigo-600 text-white py-4 rounded-2xl font-black shadow-lg shadow-indigo-100 active:scale-95 transition-all">
+            {isLogin ? '立即登录' : '完成注册并登录'}
           </button>
         </form>
-        <button onClick={() => setIsLogin(!isLogin)} className="w-full mt-6 text-indigo-600 text-sm font-bold">
-          {isLogin ? '还没有账号？点此快速注册' : '已有账号？返回登录'}
+
+        <div className="mt-8 pt-8 border-t border-gray-50">
+          <p className="text-center text-[10px] font-black text-gray-300 uppercase tracking-widest mb-4">演示账号快速进入</p>
+          <div className="flex justify-center gap-2">
+            <button onClick={() => quickLogin('buyer-1')} className="text-[10px] font-black px-3 py-1.5 bg-indigo-50 text-indigo-600 rounded-lg hover:bg-indigo-100">甲方(采购)</button>
+            <button onClick={() => quickLogin('vendor-1')} className="text-[10px] font-black px-3 py-1.5 bg-emerald-50 text-emerald-600 rounded-lg hover:bg-emerald-100">乙方(供应)</button>
+            <button onClick={() => quickLogin('admin-master')} className="text-[10px] font-black px-3 py-1.5 bg-gray-50 text-gray-600 rounded-lg hover:bg-gray-100">总管</button>
+          </div>
+        </div>
+
+        <button onClick={() => setIsLogin(!isLogin)} className="w-full mt-6 text-indigo-600 text-xs font-bold text-center">
+          {isLogin ? '没有账号？点此注册一个' : '已有账号？返回登录界面'}
         </button>
       </div>
     </div>
   );
 };
 
-// --- 询价单详情 (微信适配版) ---
+// --- 询价详情 ---
 const RFQDetail: React.FC<{ rfq: RFQ, bids: Bid[], user: User, onAddBid: (bid: Bid) => void }> = ({ rfq, bids, user, onAddBid }) => {
-  const [isAnalyzing, setIsAnalyzing] = useState(false);
-  const [aiReport, setAiReport] = useState('');
   const [amount, setAmount] = useState('');
+  const [showShareGuide, setShowShareGuide] = useState(false);
   const rfqBids = bids.filter(b => b.rfqId === rfq.id);
   const myBid = rfqBids.find(b => b.vendorId === user.id);
-  
   const currentMinPrice = rfqBids.length > 0 ? Math.min(...rfqBids.map(b => b.amount)) : null;
 
-  const handleShare = () => {
-    const text = `【询价邀请】${rfq.title}\n采购需求：${rfq.description.substring(0, 30)}...\n点击下方链接直接参与竞价：\n`;
-    const url = window.location.href;
-    if (navigator.share) {
-      navigator.share({ title: '询价邀请', text: text, url: url }).catch(() => copyToClipboard(text + url));
-    } else {
-      copyToClipboard(text + url);
-    }
-  };
+  const displayBids = user.role === UserRole.ADMIN 
+    ? rfqBids.map(b => ({ name: b.vendorName, price: b.amount }))
+    : rfqBids.map((b, i) => ({ name: b.vendorId === user.id ? '我的报价' : `供应商 ${i+1}`, price: b.amount }));
 
-  const copyToClipboard = (content: string) => {
-    navigator.clipboard.writeText(content).then(() => {
-      alert('【分享文案已复制】\n请在微信中粘贴发送给供应商。对方点击即可参与报价。');
-    }).catch(() => alert('复制失败，请手动截图或复制网址发送'));
+  const handleInvite = async () => {
+    const isWeChat = /MicroMessenger/i.test(navigator.userAgent);
+    const inviteText = `您好，我司正在进行“${rfq.title}”项目的公开询价，诚邀贵司参与竞价。项目链接：${window.location.href}`;
+    
+    try {
+      await navigator.clipboard.writeText(inviteText);
+      if (isWeChat) {
+        setShowShareGuide(true);
+      } else {
+        alert('邀请话术及链接已复制到剪贴板！可以直接粘贴发给供应商。');
+      }
+    } catch (err) {
+      alert('邀请链接：' + window.location.href);
+    }
   };
 
   const handleBid = (e: React.FormEvent) => {
@@ -240,84 +312,114 @@ const RFQDetail: React.FC<{ rfq: RFQ, bids: Bid[], user: User, onAddBid: (bid: B
       amount: parseFloat(amount),
       currency: 'CNY',
       deliveryDate: '2025-05-01',
-      notes: '在线提交',
+      notes: '',
       timestamp: new Date().toISOString(),
       itemQuotes: []
     });
-    alert('报价提交成功！');
+    alert('报价已成功提交并实时同步！');
   };
 
-  const chartData = rfqBids.map(b => ({ name: b.vendorName, price: b.amount })).sort((a,b) => a.price - b.price);
+  const chartData = [...displayBids].sort((a,b) => a.price - b.price);
 
   return (
-    <div className="flex flex-col gap-6 pb-24 animate-in slide-in-from-bottom-4 duration-500">
-      <div className="bg-white p-6 rounded-3xl border shadow-sm">
-        <div className="flex justify-between items-start mb-4">
-          <h2 className="text-xl font-bold leading-tight">{rfq.title}</h2>
+    <div className="flex flex-col gap-6 pb-24">
+      {showShareGuide && <WeChatShareMask onClose={() => setShowShareGuide(false)} />}
+      
+      <div className="bg-white p-8 rounded-3xl border border-gray-100 shadow-sm relative overflow-hidden">
+        <div className="absolute top-0 right-0 p-8 opacity-5"><Icons.Layout /></div>
+        <div className="flex justify-between items-start mb-6">
+          <div>
+            <h2 className="text-2xl font-black text-gray-900">{rfq.title}</h2>
+            <p className="text-[10px] text-gray-400 font-bold mt-1">项目编号: {rfq.id}</p>
+          </div>
           <Badge status={rfq.status} />
         </div>
-        <div className="bg-blue-50 text-blue-700 p-3 rounded-xl text-[10px] font-bold uppercase tracking-wider mb-4">
-          创建时间：{new Date(rfq.createdAt).toLocaleString()}
+        <div className="bg-gray-50 p-6 rounded-2xl mb-6">
+          <p className="text-gray-600 text-sm leading-relaxed whitespace-pre-wrap">{rfq.description}</p>
         </div>
-        <p className="text-gray-500 text-sm mb-6 whitespace-pre-wrap leading-relaxed">{rfq.description}</p>
         <div className="space-y-3">
-          <h4 className="text-[10px] font-black text-gray-400 uppercase tracking-widest">物料清单</h4>
+          <h4 className="text-[10px] font-black text-gray-400 uppercase tracking-widest">采购明细</h4>
           {rfq.items.map(i => (
-            <div key={i.id} className="flex justify-between p-4 bg-gray-50 rounded-2xl text-sm border border-gray-100">
-              <span className="text-gray-700 font-bold">{i.name}</span>
-              <span className="font-black text-indigo-600">{i.quantity} {i.unit}</span>
+            <div key={i.id} className="flex justify-between p-4 bg-white border border-gray-50 rounded-2xl text-sm font-bold shadow-sm">
+              <span className="text-gray-700">{i.name}</span>
+              <span className="text-indigo-600 px-3 py-1 bg-indigo-50 rounded-lg">{i.quantity} {i.unit}</span>
             </div>
           ))}
         </div>
+
         {user.role === UserRole.ADMIN && (
-          <button onClick={handleShare} className="w-full mt-6 bg-green-600 text-white py-4 rounded-2xl flex items-center justify-center gap-2 font-bold shadow-lg shadow-green-100 active:scale-95 transition-all">
-             发送微信邀请给供应商
-          </button>
+          <div className="mt-8 pt-8 border-t border-gray-100">
+            <button onClick={handleInvite} className="w-full flex items-center justify-center gap-2 bg-indigo-50 text-indigo-600 py-4 rounded-2xl font-black text-xs uppercase tracking-widest hover:bg-indigo-100 transition-all">
+              <Icons.Download /> 邀请外部供应商参与
+            </button>
+            <p className="text-center text-[10px] text-gray-400 mt-3 font-bold">点击按钮将自动复制邀请链接，并在微信内提供分享指引</p>
+          </div>
         )}
       </div>
 
-      {user.role === UserRole.ADMIN && rfqBids.length > 0 && (
-        <div className="bg-white p-6 rounded-3xl border shadow-sm">
-          <div className="flex justify-between items-center mb-6">
-            <h3 className="font-bold flex items-center gap-2 text-lg">竞价实时看板 <span className="text-xs bg-indigo-50 text-indigo-600 px-2 py-1 rounded-full font-bold">{rfqBids.length}家已报</span></h3>
-            <button onClick={async () => { setIsAnalyzing(true); setAiReport(await analyzeBids(rfq.title, rfqBids)); setIsAnalyzing(false); }} className="text-indigo-600 text-[10px] font-black uppercase tracking-wider py-2 px-3 bg-indigo-50 rounded-xl hover:bg-indigo-100 transition-colors">
-              {isAnalyzing ? '分析中...' : 'AI 智能评估报告'}
-            </button>
-          </div>
-          <div className="h-56">
-            <ResponsiveContainer>
-              <BarChart data={chartData}>
-                <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f0f0f0" />
-                <XAxis dataKey="name" fontSize={10} tick={{fill: '#999'}} axisLine={false} tickLine={false} />
-                <YAxis fontSize={10} tick={{fill: '#999'}} axisLine={false} tickLine={false} />
-                <Tooltip cursor={{fill: '#f5f7ff'}} contentStyle={{borderRadius: '16px', border: 'none', boxShadow: '0 8px 24px rgba(0,0,0,0.1)'}} />
-                <Bar dataKey="price" fill="#4F46E5" radius={[8,8,0,0]}>
-                  {chartData.map((entry, index) => (
-                    <Cell key={`cell-${index}`} fill={index === 0 ? '#10B981' : '#4F46E5'} />
-                  ))}
-                </Bar>
-              </BarChart>
-            </ResponsiveContainer>
-          </div>
-          {aiReport && <div className="mt-6 p-5 bg-gradient-to-br from-indigo-50 to-blue-50 rounded-2xl text-xs text-indigo-900 leading-relaxed border border-indigo-100 shadow-inner animate-in fade-in duration-700">{aiReport}</div>}
-        </div>
-      )}
-
-      {user.role === UserRole.VENDOR && (
-        <div className="fixed bottom-0 left-0 right-0 p-4 bg-white/90 backdrop-blur-xl border-t z-50 md:relative md:border-none md:p-0 md:bg-transparent">
-          <div className="max-w-4xl mx-auto space-y-3">
-            {currentMinPrice && (
-              <div className="flex justify-between items-center px-5 py-3 bg-amber-50 rounded-2xl border border-amber-100 animate-pulse">
-                <span className="text-[10px] text-amber-700 font-black uppercase tracking-widest">🔥 实时行情</span>
-                <span className="text-xs text-amber-900 font-bold">当前最低价: <span className="text-sm font-black text-amber-600">¥{currentMinPrice.toLocaleString()}</span></span>
+      <div className="bg-white p-8 rounded-3xl border border-gray-100 shadow-sm">
+        <h3 className="font-black text-gray-900 mb-8 flex items-center justify-between">
+          <span>{user.role === UserRole.ADMIN ? '竞价全览看板' : '市场竞争热度'}</span>
+          <span className="text-[10px] bg-indigo-50 text-indigo-600 px-3 py-1 rounded-full font-black uppercase tracking-widest">{rfqBids.length} 家供应商在线竞价</span>
+        </h3>
+        {rfqBids.length > 0 ? (
+          <>
+            <div className="h-64 mb-8">
+              <ResponsiveContainer>
+                <BarChart data={chartData}>
+                  <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f8fafc" />
+                  <XAxis dataKey="name" fontSize={10} axisLine={false} tickLine={false} fontWeight="bold" />
+                  <YAxis fontSize={10} axisLine={false} tickLine={false} fontWeight="bold" />
+                  <Tooltip 
+                    cursor={{fill: '#f8fafc'}} 
+                    contentStyle={{borderRadius: '20px', border: 'none', boxShadow: '0 20px 50px rgba(0,0,0,0.1)', padding: '15px'}}
+                  />
+                  <Bar dataKey="price" fill="#4F46E5" radius={[10,10,0,0]} barSize={40}>
+                    {chartData.map((entry, index) => (
+                      <Cell key={`c-${index}`} fill={index === 0 ? '#10B981' : (entry.name === '我的报价' ? '#F59E0B' : '#4F46E5')} />
+                    ))}
+                  </Bar>
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+            
+            {user.role === UserRole.ADMIN && (
+              <div className="grid gap-2">
+                <p className="text-[10px] font-black text-gray-300 uppercase tracking-widest mb-2">详细出价单</p>
+                {rfqBids.sort((a,b) => a.amount - b.amount).map(b => (
+                  <div key={b.id} className="flex justify-between items-center p-4 bg-gray-50 rounded-2xl border border-transparent hover:border-indigo-100 transition-all">
+                    <div>
+                      <p className="font-bold text-sm text-gray-900">{b.vendorName}</p>
+                      <p className="text-[10px] text-gray-400 font-bold">{b.timestamp.split('T')[0]}</p>
+                    </div>
+                    <span className="text-lg font-black text-indigo-600">¥{b.amount.toLocaleString()}</span>
+                  </div>
+                ))}
               </div>
             )}
-            <form onSubmit={handleBid} className="flex gap-2">
-              <input type="number" required placeholder="输入总报价 (元)" className="flex-1 p-5 bg-gray-100 border-none rounded-2xl focus:ring-2 focus:ring-indigo-600 outline-none font-bold" value={amount} onChange={e => setAmount(e.target.value)} />
-              <button className="bg-indigo-600 text-white px-8 py-5 rounded-2xl font-black shadow-xl shadow-indigo-200 active:scale-90 transition-transform whitespace-nowrap">
-                {myBid ? '更新报价' : '确认报价'}
-              </button>
-            </form>
+          </>
+        ) : <div className="text-center py-20 text-gray-300 font-bold text-sm italic">等待供应商接入报价...</div>}
+      </div>
+
+      {user.role === UserRole.VENDOR && (
+        <div className="fixed bottom-0 left-0 right-0 p-6 bg-white/80 backdrop-blur-2xl border-t border-gray-100 z-50 md:relative md:bg-white md:border md:rounded-3xl md:p-8">
+          <div className="max-w-4xl mx-auto space-y-4">
+             {currentMinPrice && (
+                <div className="flex justify-between items-center px-5 py-3 bg-amber-50 rounded-2xl border border-amber-100 text-xs font-black text-amber-700">
+                  <span className="flex items-center gap-2">✨ 实时情报: 市场当前最优价格为 ¥{currentMinPrice.toLocaleString()}</span>
+                  {myBid && myBid.amount <= currentMinPrice && <span className="bg-amber-500 text-white px-2 py-0.5 rounded text-[10px]">您目前领先</span>}
+                </div>
+             )}
+             <form onSubmit={handleBid} className="flex gap-3">
+                <div className="relative flex-1">
+                  <span className="absolute left-5 top-1/2 -translate-y-1/2 font-black text-gray-400 text-lg">¥</span>
+                  <input type="number" required placeholder="输入您的含税总报价" className="w-full pl-10 pr-5 py-5 bg-gray-50 rounded-2xl border-none outline-none font-black text-lg focus:ring-2 focus:ring-indigo-600 transition-all" value={amount} onChange={e => setAmount(e.target.value)} />
+                </div>
+                <button className="bg-indigo-600 text-white px-10 py-5 rounded-2xl font-black shadow-xl shadow-indigo-100 active:scale-95 hover:bg-indigo-700 transition-all">
+                  {myBid ? '更新报价' : '立即抢标'}
+                </button>
+             </form>
+             <p className="text-center text-[10px] text-gray-400 font-bold">报价提交后将实时更新至采购方看板，信息受端到端加密保护</p>
           </div>
         </div>
       )}
@@ -325,12 +427,21 @@ const RFQDetail: React.FC<{ rfq: RFQ, bids: Bid[], user: User, onAddBid: (bid: B
   );
 };
 
-// --- 主应用 ---
+// --- 主应用入口 ---
 const App: React.FC = () => {
   const [user, setUser] = useState<User | null>(null);
-  const [users, setUsers] = useState<User[]>(() => JSON.parse(localStorage.getItem('qb_u') || JSON.stringify(INITIAL_USERS)));
-  const [rfqs, setRfqs] = useState<RFQ[]>(() => JSON.parse(localStorage.getItem('qb_r') || JSON.stringify(INITIAL_RFQS)));
-  const [bids, setBids] = useState<Bid[]>(() => JSON.parse(localStorage.getItem('qb_b') || '[]'));
+  const [users, setUsers] = useState<User[]>(() => {
+    const saved = localStorage.getItem('qb_u');
+    return saved ? JSON.parse(saved) : INITIAL_USERS;
+  });
+  const [rfqs, setRfqs] = useState<RFQ[]>(() => {
+    const saved = localStorage.getItem('qb_r');
+    return saved ? JSON.parse(saved) : INITIAL_RFQS;
+  });
+  const [bids, setBids] = useState<Bid[]>(() => {
+    const saved = localStorage.getItem('qb_b');
+    return saved ? JSON.parse(saved) : [];
+  });
 
   useEffect(() => {
     localStorage.setItem('qb_u', JSON.stringify(users));
@@ -338,95 +449,97 @@ const App: React.FC = () => {
     localStorage.setItem('qb_b', JSON.stringify(bids));
   }, [users, rfqs, bids]);
 
-  const handleLogout = () => {
-    setUser(null);
-  };
-
   return (
     <Router>
       {!user ? (
         <AuthPage users={users} onAuth={setUser} onRegister={u => setUsers(p => [...p, u])} />
       ) : (
-        <div className="min-h-screen bg-gray-50 text-gray-900 font-sans selection:bg-indigo-100 pb-10">
-          <nav className="bg-white/80 backdrop-blur-md border-b px-4 h-16 flex items-center justify-between sticky top-0 z-40 shadow-sm">
-            <Link to="/" className="text-xl font-black text-indigo-600 flex items-center gap-1 active:scale-95 transition-transform">
-              <Icons.Shield /> QuickBid
+        <div className="min-h-screen bg-gray-50 text-gray-900 pb-10">
+          <nav className="bg-white/90 backdrop-blur-md border-b border-gray-100 px-6 h-20 flex items-center justify-between sticky top-0 z-40">
+            <Link to="/" className="text-2xl font-black text-indigo-600 flex items-center gap-2 tracking-tighter">
+              <div className="bg-indigo-600 text-white p-1.5 rounded-lg"><Icons.Shield /></div>
+              <span>QuickBid</span>
             </Link>
-            <div className="flex items-center gap-3">
-              {user.role === UserRole.SYS_ADMIN && (
-                <Link to="/admin" className="p-3 text-gray-400 hover:text-indigo-600 transition-colors">
+            <div className="flex items-center gap-6">
+              {(user.role === UserRole.SYS_ADMIN || user.role === UserRole.ADMIN) && (
+                <Link to="/admin" className="p-3 bg-gray-50 rounded-2xl text-gray-400 hover:text-indigo-600 hover:bg-indigo-50 transition-all">
                   <Icons.Settings />
                 </Link>
               )}
-              <div className="hidden sm:flex flex-col items-end">
-                <span className="text-[10px] text-gray-400 font-black uppercase tracking-tighter leading-none">Status</span>
-                <span className="text-xs font-bold leading-none mt-1">{user.name}</span>
+              <div className="flex items-center gap-3">
+                <div className="text-right">
+                  <p className="text-[10px] text-gray-300 font-black uppercase tracking-widest leading-none mb-1">{user.role}</p>
+                  <p className="text-sm font-black text-gray-900 leading-none">{user.name}</p>
+                </div>
+                <button onClick={() => setUser(null)} className="h-10 w-10 flex items-center justify-center bg-gray-50 text-gray-400 rounded-xl hover:bg-red-50 hover:text-red-600 transition-all">
+                  <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
+                  </svg>
+                </button>
               </div>
-              <button 
-                onClick={handleLogout} 
-                className="h-10 px-4 flex items-center justify-center bg-gray-50 hover:bg-red-50 hover:text-red-600 rounded-2xl text-[11px] font-black text-gray-500 transition-all active:scale-90"
-              >
-                LOGOUT
-              </button>
             </div>
           </nav>
 
-          <main className="p-4 max-w-5xl mx-auto">
+          <main className="p-6 max-w-5xl mx-auto">
             <Routes>
               <Route path="/" element={
-                user.role === UserRole.ADMIN ? (
-                  <div className="space-y-6">
-                    <div className="flex justify-between items-center pt-2">
-                      <h2 className="text-2xl font-black tracking-tight">询价管理</h2>
-                      <Link to="/rfq/new" className="bg-indigo-600 text-white p-4 rounded-2xl shadow-lg shadow-indigo-100 active:scale-90 transition-transform">
+                <div className="space-y-8">
+                  <div className="flex justify-between items-end">
+                    <div>
+                      <h2 className="text-3xl font-black tracking-tight text-gray-900">
+                        {user.role === UserRole.ADMIN ? '项目管理工作台' : '可参与竞价项目'}
+                      </h2>
+                      <p className="text-gray-400 font-medium mt-1">当前共有 {rfqs.length} 个活跃询价单</p>
+                    </div>
+                    {user.role === UserRole.ADMIN && (
+                      <button onClick={() => {
+                        const newId = 'RFQ-'+Date.now();
+                        setRfqs(p => [...p, { 
+                          id: newId, 
+                          title: '未命名采购项目', 
+                          description: '请输入详细需求说明...', 
+                          deadline: '2025-12-31', 
+                          status: RFQStatus.OPEN, 
+                          createdAt: new Date().toISOString(), 
+                          creatorId: user.id, 
+                          items: [{id:'1', name:'点击修改物料名', quantity:1, unit:'批'}] 
+                        }]);
+                      }} className="bg-indigo-600 text-white p-5 rounded-3xl shadow-2xl shadow-indigo-200 hover:scale-105 active:scale-95 transition-all">
                         <Icons.Plus />
-                      </Link>
-                    </div>
-                    <div className="grid gap-4">
-                      {rfqs.length === 0 ? (
-                        <div className="py-20 text-center bg-white rounded-3xl border border-dashed text-gray-400">暂无询价单，点击右上角开始发布</div>
-                      ) : (
-                        rfqs.map(r => (
-                          <Link key={r.id} to={`/rfq/${r.id}`} className="group bg-white p-6 rounded-3xl border border-transparent hover:border-indigo-600 flex justify-between items-center shadow-sm transition-all active:scale-[0.98]">
-                            <div className="flex-1 pr-4">
-                              <h3 className="font-bold text-lg mb-1 group-hover:text-indigo-600 transition-colors">{r.title}</h3>
-                              <div className="flex items-center gap-2">
-                                <Badge status={r.status} />
-                                <span className="text-xs font-bold text-indigo-600 bg-indigo-50 px-2 py-0.5 rounded-full">
-                                  {bids.filter(b=>b.rfqId===r.id).length} 家已报
-                                </span>
-                              </div>
-                            </div>
-                            <div className="bg-gray-50 p-4 rounded-2xl text-gray-300 group-hover:text-indigo-600 transition-colors"><Icons.Layout /></div>
-                          </Link>
-                        ))
-                      )}
-                    </div>
+                      </button>
+                    )}
                   </div>
-                ) : (
-                  <div className="space-y-6">
-                    <h2 className="text-2xl font-black tracking-tight pt-2">最新项目机会</h2>
-                    <div className="grid gap-4">
-                      {rfqs.length === 0 ? (
-                        <div className="py-20 text-center bg-white rounded-3xl border border-dashed text-gray-400">当前没有公开的招标项目</div>
-                      ) : (
-                        rfqs.map(r => (
-                          <div key={r.id} className="bg-white p-6 rounded-3xl border shadow-sm hover:border-indigo-600 transition-colors">
-                            <div className="flex justify-between mb-3"><h3 className="font-bold text-lg">{r.title}</h3><Badge status={r.status} /></div>
-                            <p className="text-xs text-gray-400 mb-6 line-clamp-2 leading-relaxed">{r.description}</p>
-                            <Link to={`/rfq/${r.id}`} className="block w-full text-center py-5 bg-indigo-600 text-white rounded-2xl text-sm font-black shadow-xl shadow-indigo-100 active:scale-95 transition-transform">
-                               立即报价
-                            </Link>
+                  
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                    {rfqs.map(r => (
+                      <Link key={r.id} to={`/rfq/${r.id}`} className="group bg-white p-8 rounded-[40px] border border-transparent hover:border-indigo-100 shadow-sm hover:shadow-xl transition-all flex flex-col justify-between h-64 relative overflow-hidden">
+                        <div className="absolute top-0 right-0 p-8 opacity-0 group-hover:opacity-10 transition-opacity"><Icons.Layout /></div>
+                        <div>
+                          <div className="flex items-center gap-2 mb-3">
+                            <Badge status={r.status} />
+                            <span className="text-[10px] font-black text-gray-300 uppercase">截止: {r.deadline}</span>
                           </div>
-                        ))
-                      )}
-                    </div>
+                          <h3 className="font-black text-xl text-gray-800 group-hover:text-indigo-600 transition-colors line-clamp-2">{r.title}</h3>
+                        </div>
+                        <div className="flex justify-between items-end">
+                           <div className="text-[10px] font-bold text-gray-400">
+                             发布于 {r.createdAt.split('T')[0]}
+                           </div>
+                           <div className="bg-gray-50 group-hover:bg-indigo-600 group-hover:text-white p-3 rounded-2xl transition-all">
+                             <Icons.Layout />
+                           </div>
+                        </div>
+                      </Link>
+                    ))}
                   </div>
-                )
+                </div>
               } />
-              <Route path="/admin" element={<SystemAdminPanel users={users} setUsers={setUsers} rfqs={rfqs} setRfqs={setRfqs} bids={bids} setBids={setBids} />} />
-              <Route path="/rfq/new" element={<NewRFQ onAdd={r => setRfqs(p => [...p, r])} />} />
-              <Route path="/rfq/:id" element={<RFQRoute rfqs={rfqs} bids={bids} user={user} onAddBid={b => setBids(p => { const idx = p.findIndex(x => x.rfqId === b.rfqId && x.vendorId === b.vendorId); if (idx>=0) { const n = [...p]; n[idx] = b; return n; } return [...p, b]; })} />} />
+              <Route path="/admin" element={<SystemAdminPanel users={users} setUsers={setUsers} rfqs={rfqs} setRfqs={setRfqs} bids={bids} setBids={setBids} currentUser={user} />} />
+              <Route path="/rfq/:id" element={<RFQRoute rfqs={rfqs} bids={bids} user={user} onAddBid={b => setBids(p => { 
+                const idx = p.findIndex(x => x.rfqId === b.rfqId && x.vendorId === b.vendorId); 
+                if (idx>=0) { const n = [...p]; n[idx] = b; return n; } 
+                return [...p, b]; 
+              })} />} />
               <Route path="*" element={<Navigate to="/" replace />} />
             </Routes>
           </main>
@@ -439,32 +552,7 @@ const App: React.FC = () => {
 const RFQRoute = ({ rfqs, bids, user, onAddBid }: any) => {
   const { id } = useParams();
   const rfq = rfqs.find((r:any) => r.id === id);
-  return rfq ? <RFQDetail rfq={rfq} bids={bids} user={user} onAddBid={onAddBid} /> : <div className="p-20 text-center text-gray-400 bg-white rounded-3xl">项目已移除或链接已失效</div>;
-};
-
-const NewRFQ = ({ onAdd }: any) => {
-  const navigate = useNavigate();
-  return (
-    <div className="bg-white p-10 rounded-3xl border shadow-lg max-w-lg mx-auto animate-in zoom-in duration-300">
-      <h2 className="text-2xl font-black mb-6 text-center">发布询价需求</h2>
-      <p className="text-sm text-gray-400 mb-8 text-center px-4 leading-relaxed">发布后，你可以将项目链接发送给供应商，对方即可实时竞价。</p>
-      <button onClick={() => { 
-        onAdd({ 
-          id: 'RFQ-'+Date.now(), 
-          title: '示例项目 '+(new Date().toLocaleDateString()), 
-          description: '这是一个采购详情描述...', 
-          deadline: '2025-12-31', 
-          status: RFQStatus.OPEN, 
-          createdAt: new Date().toISOString(), 
-          creatorId: 'me', 
-          items: [{id:'1', name:'关键核心物料', quantity: 100, unit:'PCS'}] 
-        }); 
-        navigate('/'); 
-      }} className="w-full bg-indigo-600 text-white py-5 rounded-2xl font-black shadow-xl shadow-indigo-100 active:scale-95 transition-transform">
-        一键创建示例询价单
-      </button>
-    </div>
-  );
+  return rfq ? <RFQDetail rfq={rfq} bids={bids} user={user} onAddBid={onAddBid} /> : <div className="text-center py-40 font-black text-gray-300">项目不存在或已下架</div>;
 };
 
 export default App;

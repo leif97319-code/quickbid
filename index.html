@@ -1,14 +1,32 @@
 
 <!DOCTYPE html>
-<html lang="en">
+<html lang="zh-CN">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>QuickBid - 极简询价平台</title>
+    
+    <!-- 微信分享元数据 -->
+    <meta property="og:title" content="QuickBid 询价邀请">
+    <meta property="og:description" content="您收到一份新的采购询价邀请，请点击查看详情并参与竞价。">
+    <meta property="og:type" content="website">
+    <meta name="description" content="极简、安全、透明的竞价管理工具">
+    
     <script src="https://cdn.tailwindcss.com"></script>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <style>
         body { font-family: 'Inter', sans-serif; }
+        .wechat-mask {
+            background: rgba(0, 0, 0, 0.85);
+            position: fixed;
+            top: 0; left: 0; right: 0; bottom: 0;
+            z-index: 100;
+            display: flex;
+            justify-content: flex-end;
+            padding: 20px;
+            color: white;
+            text-align: right;
+        }
     </style>
 <script type="importmap">
 {
@@ -18,16 +36,14 @@
     "react": "https://esm.sh/react@^19.2.3",
     "react-router-dom": "https://esm.sh/react-router-dom@^7.12.0",
     "recharts": "https://esm.sh/recharts@^3.6.0",
-    "@google/genai": "https://esm.sh/@google/genai@^1.35.0",
-    "@vitejs/plugin-react": "https://esm.sh/@vitejs/plugin-react@^5.1.2",
-    "vite": "https://esm.sh/vite@^7.3.1"
+    "vite": "https://esm.sh/vite@^7.3.1",
+    "@vitejs/plugin-react": "https://esm.sh/@vitejs/plugin-react@^5.1.2"
   }
 }
 </script>
 </head>
 <body class="bg-gray-50">
     <div id="root"></div>
-    <!-- 必须显式指定入口文件，Vite 才能找到它 -->
-    <script type="module" src="/index.tsx"></script>
+    <script type="module" src="./index.tsx"></script>
 </body>
 </html>
